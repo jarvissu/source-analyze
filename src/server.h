@@ -877,22 +877,58 @@ struct sharedObjectsStruct {
 };
 
 /* ZSETs use a specialized version of Skiplists */
+/*
+ * zset数据类型的一种编码格式，通过跳跃表实现，
+ * 而该数据结构就是表示跳跃表中的一个节点
+ * */
 typedef struct zskiplistNode {
-    sds ele;
-    double score;
+    sds ele;        // 节点中的元素，zset结合中存储的字符串内容，通过sds进行存储
+    double score;   // 分值，在跳表中就是根据这个分值来进行排序操作的。
+    /*
+     * 后退指针，指向每一个节点的前一个节点。所以称之为后退指针。
+     * 头结点和第一个节点的backward都为null，该指针的作用就是为了从后往前遍历跳跃表时使用。
+     *
+     * todo：但是这里从后往前遍历时，时间复杂度不就是O(N)了嘛，就没有办法用到跳表的特性了
+     * todo：这个地方还没有想明白。后面再看
+     * */
     struct zskiplistNode *backward;
+    /*
+     * 节点的层级：是一个柔性数组，因为每一个节点可能存在多个层级的有序链表中，在生成跳表时，随机生成一个1~64的值，值越大，出现的概率越低。
+     * 在redis中，多个层级是通过zskiplistLevel的数组实现的，而不是真的存储了多个节点，
+     * 也在很大程度上节省了空间，因为额外存储指针，而不是实际的数据。
+     * 1、 forward：前驱指针，指向该层级下对应的下一个节点
+     * 2、 span：本层下个节点中间所跨越的节点个数为本层的跨度，span越大，跳过的节点个数越多。
+     * */
     struct zskiplistLevel {
         struct zskiplistNode *forward;
         unsigned long span;
     } level[];
 } zskiplistNode;
 
+/*
+ * 实际的跳表的数据结构定义，有一下几个部分组成
+ * header：指向跳表的头结点的位置（前面提到过，头结点不存储实际的数据）。
+ * 头结点是跳跃表中的一个特殊节点，它的level数组元素个数为64.头结点在有序集合中不存储任何member和score值。
+ * ele值为NULL，socre值为0；
+ * 当然，头结点也不计入跳表的总长度length中。
+ * 头结点在初始化时，64个元素的forword都指向null，span都为0
+ * tail：指向跳表尾结点
+ * length：跳跃表的总长度，即元素个数。表示的是除头结点之外的节点总数。
+ * level：跳跃表的高度，是除头结点之外，其他节点中 zskiplistLevel数组的最大值。
+ * */
 typedef struct zskiplist {
     struct zskiplistNode *header, *tail;
     unsigned long length;
     int level;
 } zskiplist;
 
+/*
+ * zset数据类型：内部通过两个数据结构共同维护。
+ * dict：字段的数据结构，通过这个数据结构，可以使得zset中根据ele查询score的时间复杂度控制到O(1)，但是没有办法很好的处理范围查询
+ * zsl：跳表的数据结构，通过这个数据结构，可以使得zset中的范围查询的时间复杂度控制到O(logN)。
+ * redis通过空间换时间的策略，冗余一个指针备份，提高了查询效率。
+ * 注意，这里只是冗余了一份指针，实际的数据还是只存储了一份。
+ * */
 typedef struct zset {
     dict *dict;
     zskiplist *zsl;

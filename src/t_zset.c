@@ -68,29 +68,55 @@ int zslLexValueLteMax(sds value, zlexrangespec *spec);
 
 /* Create a skiplist node with the specified number of levels.
  * The SDS string 'ele' is referenced by the node after the call. */
+/*
+ * 根据指定的参数，创建一个skiplistNode节点
+ * */
 zskiplistNode *zslCreateNode(int level, double score, sds ele) {
+    /*
+     * 为节点分配内存空间，由于zskiplistNode的最后一个元素level是一个柔性数组，
+     * 因此分配内存时，必须指定level数组的大小
+     * */
     zskiplistNode *zn =
         zmalloc(sizeof(*zn)+level*sizeof(struct zskiplistLevel));
+    /*给这个节点指定相应的属性*/
     zn->score = score;
     zn->ele = ele;
     return zn;
 }
 
 /* Create a new skiplist. */
+/*
+ * 创建一个新的skiplist，即跳表数据结构。
+ * 上面的zslCreateNode只是创建skiplist中的一个节点。
+ * */
 zskiplist *zslCreate(void) {
     int j;
     zskiplist *zsl;
 
+    /*
+     * 首先给skiplist数据结构分配内存空间。
+     * 由于不包含柔性数组，因此可以直接通过sizeof计算出zskiplist需要的内存大小。
+     * */
     zsl = zmalloc(sizeof(*zsl));
+    /*初始化指定当前跳表的层级为1，因为没有任何节点*/
     zsl->level = 1;
     zsl->length = 0;
+    /*
+     * 创建头结点，头结点是跳表数据结构中的一个特殊的节点
+     * 此处创建头结点的过程和其他节点没有任何区别，都是调用zslCreateNode创建一个zskiplistNode节点。
+     * */
     zsl->header = zslCreateNode(ZSKIPLIST_MAXLEVEL,0,NULL);
+    /*
+     * 初始化头结点的层级
+     * 这里会初始化头结点中的64个层级，并赋予初始值：forward指针指向null，span为0.
+     * */
     for (j = 0; j < ZSKIPLIST_MAXLEVEL; j++) {
         zsl->header->level[j].forward = NULL;
         zsl->header->level[j].span = 0;
     }
     zsl->header->backward = NULL;
     zsl->tail = NULL;
+    /*跳表初始化完成，返回跳表的首地址*/
     return zsl;
 }
 
@@ -119,6 +145,12 @@ void zslFree(zskiplist *zsl) {
  * The return value of this function is between 1 and ZSKIPLIST_MAXLEVEL
  * (both inclusive), with a powerlaw-alike distribution where higher
  * levels are less likely to be returned. */
+/*
+ * 为即将创建的新的 skiplistNode生成一个随机的层级level，作为新建节点的高度。
+ * 这个level的取值控制在1~64之间，并且值越大，出现的概率越低。
+ * 节点层高确定之后，便不会再修改。
+ * TODO：随机算法有兴趣后面再慢慢了解，不是重点。
+ * */
 int zslRandomLevel(void) {
     int level = 1;
     while ((random()&0xFFFF) < (ZSKIPLIST_P * 0xFFFF))
@@ -129,31 +161,97 @@ int zslRandomLevel(void) {
 /* Insert a new node in the skiplist. Assumes the element does not already
  * exist (up to the caller to enforce that). The skiplist takes ownership
  * of the passed SDS string 'ele'. */
+/*
+ * 在跳表中，插入一个新的节点。假设这个节点当前并不存在（则由上面的zslCreateNode函数创建）
+ * 创建完后，这个skiplist跳表将获得传递过来的sds结构的所有权。
+ * 意思就是说，创建新的节点时，不会创建sds的一个副本，而是直接使用这个sds结构作为zskiplistNode的ele属性。
+ *
+ * 插入一个新的节点，分为如下步骤：
+ * 1、找到新节点需要插入的位置
+ * 2、调整跳跃表的高度（因为新插入的节点，生成的随机level可能比当前跳表的level大）
+ * 3、插入节点
+ * 4、调整backward指针（由于插入了新的节点，所以插入节点的后面节点的backward指针应该指向新节点，而新节点之前前一个节点
+ * */
 zskiplistNode *zslInsert(zskiplist *zsl, double score, sds ele) {
     zskiplistNode *update[ZSKIPLIST_MAXLEVEL], *x;
     unsigned int rank[ZSKIPLIST_MAXLEVEL];
     int i, level;
 
+    /*score取值校验，不为空*/
     serverAssert(!isnan(score));
+    /*设定x为当前头结点*/
     x = zsl->header;
+    /*
+     * 第一步：首先遍历跳表，找到当前节点应该插入的位置（根据score判断）：
+     * 1、update[] : 插入节点时，需要更新被插入节点每层的前一个节点。
+     *      由于每层更新的节点不一样，所以将每层需要更新的节点记录在update[i]中
+     * 2、rank[] : 记录当前层从header节点到update[i]节点所经历的步长，
+     *      在更新update[i]的span和设置新插入节点的span时用到。
+     *  其中i表示的是层级 1~level-1 的值
+     * */
     for (i = zsl->level-1; i >= 0; i--) {
         /* store rank that is crossed to reach the insert position */
+        /*
+         * 判断是否为第一次循环：i == (zsl->level-1)；因为i的初始值就是zsl->level-1
+         * 如果是第一次：rank[i] = 0，其实也就是rank[zsl->level-1]=0，即初始化为0
+         * 如果不是第一次：rank[i] = rank[i+1]；即当前层级的rank等于上一层的rank
+         * TODO：还没有完全搞懂rank的作用
+         * */
         rank[i] = i == (zsl->level-1) ? 0 : rank[i+1];
+        /*
+         * 遍历当前层：
+         * x->level[i].forward存在：表示当前x节点有后继节点
+         * &&
+         * （
+         *      x->level[i].forwrd->score < score    : 当前节点的后继几点的score比新插入的节点的score小。
+         *      ||
+         *      (
+         *          x-level[i].forward-score==score : 当前节点的后继节点的score和新插入的节点相等，此时需要比较元素内容
+         *          &&
+         *          sdscmp(x->level[i].forward->ele,ele) < 0 ； 比较内容ele的大小
+         *      )
+         * )
+         * 综上所述，while循环执行的条件是：当前的前驱节点（后一个节点）存在，
+         * 并且其后继节点x的score小于当前score或者在score相等的情况下，后继节点的内容ele比当前新节点的内容ele小
+         * 此时，才会继续循环，向后遍历。
+         * 由此可见，redis的zskiplist是一个单调递增的有序集合
+         * */
         while (x->level[i].forward &&
                 (x->level[i].forward->score < score ||
                     (x->level[i].forward->score == score &&
                     sdscmp(x->level[i].forward->ele,ele) < 0)))
         {
+            /*记录当前层级i跳过的节点数*/
             rank[i] += x->level[i].span;
+            /*x指针向后继续遍历i层*/
             x = x->level[i].forward;
         }
+        /*走到这里，说明已经找到了新节点在当前层i的前一个节点，通过update[i]记录*/
         update[i] = x;
+        /*
+         * 走到这里开始下一次循环，但是需要注意下面两点：
+         * 1、x节点没有更新，还是当前节点在i层级的前驱节点。
+         * 2、执行for循环中的i--，表示下移一层
+         * */
     }
+    /*
+     * 到这里，其实已经找到了新节点应该被插入的位置。
+     * 同时记录了新节点的各个层级上的前一个节点以及每层的前驱节点到当前节点之间跳过的节点数。
+     * */
     /* we assume the element is not already inside, since we allow duplicated
      * scores, reinserting the same element should never happen since the
      * caller of zslInsert() should test in the hash table if the element is
      * already inside or not. */
+    /*生成一个随机的层级level：表示当前新插入节点的level*/
     level = zslRandomLevel();
+    /*
+     * 处理新生成的level比当前skiplist中的level大的情况：
+     * 此时，很明显，大于当前skiplist的level的以上的层级，它的前一个节点一定头结点。所以，
+     * 这里相当于是上面说的第二部：调整跳跃表的高度
+     * 1、设置rank[i] = 0，
+     * 2、设置i层级的前驱节点update[i]为头结点
+     * 3、设置头结点在i层级的span为当前skiplist的长度
+     * */
     if (level > zsl->level) {
         for (i = zsl->level; i < level; i++) {
             rank[i] = 0;
@@ -162,7 +260,19 @@ zskiplistNode *zslInsert(zskiplist *zsl, double score, sds ele) {
         }
         zsl->level = level;
     }
+    /*创建新节点*/
     x = zslCreateNode(level,score,ele);
+    /*
+     * 插入新节点：遍历所有的层
+     * 1、将新节点的前驱节点，设置为当前层的前一个节点（注意不是前驱节点）的前驱节点
+     * 2、将当前节点的前一个节点的前驱节点设置为当前节点
+     * 3、设置当前节点的span
+     *      1、通过rank[0] - rank[i] 可以得到当前节点的前一个节点到当前节点之间跳过的节点个数，命名为currSpan
+     *      2、通过update[i]->level[i].span - currSpan 就可以得到当前节点后其前驱节点的span
+     * 4、设置当前节点的前一个节点的span为 rank[0] -rank[i]
+     * rank不明白什么意思，就得往后面看，看一下在哪里用的这个rank
+     * TODO：redis里这个计算span的方式，也是真的牛逼。大写的服
+     * */
     for (i = 0; i < level; i++) {
         x->level[i].forward = update[i]->level[i].forward;
         update[i]->level[i].forward = x;
@@ -173,16 +283,41 @@ zskiplistNode *zslInsert(zskiplist *zsl, double score, sds ele) {
     }
 
     /* increment span for untouched levels */
+    /*
+     * 当生成的level比当前skiplist的level小的时候，小于当前skiplist的所有层级的前一个几点的span都要+1
+     * 因为这些节点在上面的for循环中没有被处理到，所以需要额外再处理一次
+     * 这些层级上的前一个节点，其前驱节点本应该指向当前新节点，但是由于随机的level小于他们所在的level，没有指向当前新节点，
+     * 那么，这些层级的前一个节点的前驱节点，一定指向当前新节点的后面的某个节点。因此span需要+1
+     * */
     for (i = level; i < zsl->level; i++) {
         update[i]->level[i].span++;
     }
 
+    /*
+     * 更新后退指针：
+     * 1、如果最下面一层，即level=0，的前一个节点update[0]就是skiplist的头结点，
+     *      则表示，新节点插入的位置为第一个节点（注意，第一个节点不是头结点）
+     *      此时，当前节点的回退指针指向null
+     *
+     * 2、如果不是头结点，则回退指针直接指向最下面一层的前一个节点。
+     * */
     x->backward = (update[0] == zsl->header) ? NULL : update[0];
+    /*
+     * 更新当前节点0层的前驱节点的回退指针：
+     * 1、如果当前节点的前驱节点为null，则表示当前节点插入到了skiplist的最后一个节点，
+     *      直接更新skiplist的tail指针，即：zsl->tail = x
+     * 2、如果当前节点的前驱节点不为null，则表示当前节点不是插入的最后一个节点，而是skiplist某个中间节点
+     *      那么更新当前节点的前驱节点的回退指针为当前节点：即：x->level[0].forward->backward = x;
+     *
+     * */
     if (x->level[0].forward)
         x->level[0].forward->backward = x;
     else
         zsl->tail = x;
+
+    /*整个skiplist的长度+1*/
     zsl->length++;
+    /*返回新插入的节点x*/
     return x;
 }
 
