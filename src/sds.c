@@ -86,18 +86,34 @@ static inline char sdsReqType(size_t string_size) {
  * You can print the string with printf() as there is an implicit \0 at the
  * end of the string. However the string is binary safe and can contain
  * \0 characters in the middle, as the length is stored in the sds header. */
+/*
+ * 根据参数中的init指针以及指定的长度initlen字段，创建一个新的sds类型的string。
+ * 1、如果init为null的话，则创建一个空字节的sds
+ * 2、如果init为指定的SDS_NOINIT的话：则buf柔性数组不进行初始化。
+ * 但是看代码逻辑，init指定为SDS_NOINIT的时候，也将其转换为了null进行处理的，
+ * 所以指定SDS_NOINIT和null是一样的逻辑才对啊。
+ * */
 sds sdsnewlen(const void *init, size_t initlen) {
     void *sh;
     sds s;
+    // 获取到指定长度对应的sdshdr结构类型
     char type = sdsReqType(initlen);
     /* Empty strings are usually created in order to append. Use type 8
      * since type 5 is not good at this. */
+    // 如果是空串的话，也强制转换为sdshdr8进行处理，
+    // 因为为空串时，redis认为后面肯定需要修改这个string，但是又不确定具体修改的string长度是否满足sdshdr5，
+    // 所以索性就执行定义为sdshdr8，redis认为这样做更好。
     if (type == SDS_TYPE_5 && initlen == 0) type = SDS_TYPE_8;
+    /*
+     * 重新计算这个类型的结构体所占用的字节长度。
+     * 即：alloc，flags等字段所占用的长度，可以理解为结构体头长度
+     * */
     int hdrlen = sdsHdrSize(type);
     unsigned char *fp; /* flags pointer. */
-
+    /*分配内存空间，包括结构体内存空间和柔性数组的内存空间：+1 是为了存放后面的\0，兼容C语言*/
     sh = s_malloc(hdrlen+initlen+1);
     if (sh == NULL) return NULL;
+    /*处理init指定为SDS_NOINIT*/
     if (init==SDS_NOINIT)
         init = NULL;
     else if (!init)
@@ -138,9 +154,16 @@ sds sdsnewlen(const void *init, size_t initlen) {
             break;
         }
     }
+    /*当init不为null时，将init中的数据拷贝到新创建的柔性数组s中*/
     if (initlen && init)
         memcpy(s, init, initlen);
+    /*柔性数组结尾添加\0结束符，兼容C语言*/
     s[initlen] = '\0';
+    /*
+     * 对外提供的是柔性数组的指针，而不是sds结构体的地址。这样有两个好处：
+     * 1、兼容C语言，C语言的函数可以直接对柔性数组进行操作，因为柔性数组的末尾也加上了\0结束符
+     * 2、可以通过柔性数组的指针，通过向前移位的方式，轻易的找到flags等的指针：如s[-1]表示的就是flags所在的字节。
+     * */
     return s;
 }
 
@@ -162,6 +185,13 @@ sds sdsdup(const sds s) {
 }
 
 /* Free an sds string. No operation is performed if 's' is NULL. */
+/*
+ * 释放sds的内存，注意这里的s是柔性数组的地址，而不是sds的首地址，所以回收sds结构体，首先需要找到sds的首地址：
+ * 1、 通过s[-1]找到flags的字节，获取到flags
+ * 2、 通过sdsHdrSize(flags)计算当前结构体的header占多少个字节：即alloc+len+flags字段占的字节数
+ * 3、 s-sdsHdrSize(flags)可以获取到sds结构体的首地址
+ * 4、 s_free(p) 释放内存
+ * */
 void sdsfree(sds s) {
     if (s == NULL) return;
     s_free((char*)s-sdsHdrSize(s[-1]));
@@ -190,6 +220,14 @@ void sdsupdatelen(sds s) {
  * However all the existing buffer is not discarded but set as free space
  * so that next append operations will not require allocations up to the
  * number of bytes previously available. */
+/*
+ * 为了优化性能，redis提供了下面的sdsclear函数，用于通过修改sds中的内容为空串，而不是回收内存。
+ * 以此达到清空的目的。
+ * 此处仅仅将sds的len置为0，然后将柔性数组的第一个字节设置为结束符\0，此时柔性数组buf并没有被真正的从内存中清除。
+ * 新的数据可以覆盖写，而不用重新申请内存。
+ *
+ * 其实很多地方都会通过这种方式提高性能，如mysql中的"自由空间链表"和这里就有异曲同工之处。
+ * */
 void sdsclear(sds s) {
     sdssetlen(s, 0);
     s[0] = '\0';
@@ -201,43 +239,69 @@ void sdsclear(sds s) {
  *
  * Note: this does not change the *length* of the sds string as returned
  * by sdslen(), but only the free buffer space we have. */
+/*
+* 扩大sds字符串末尾的空闲空间，以便调用者
+* 确定在调用这个函数后可以覆盖到addlen
+* 字符串结束后的字节，加上nul术语的多一个字节。
+ * 有道翻译如上：其实很简单，就是校验当前sds结构体s是否能够在存入addlen个字节，
+ * 如果可以，直接返回
+ * 如果不可以，扩容之后，并将原sds结构体中的数据拷贝到新的柔性数组中返回新的柔性数组。
+ * */
 sds sdsMakeRoomFor(sds s, size_t addlen) {
     void *sh, *newsh;
+    /*计算当前sds结构体的可用内存空间*/
     size_t avail = sdsavail(s);
     size_t len, newlen;
     char type, oldtype = s[-1] & SDS_TYPE_MASK;
     int hdrlen;
 
     /* Return ASAP if there is enough space left. */
+    /*可用内存空间大于需要增加的数组长度，直接返回原柔性数组s*/
     if (avail >= addlen) return s;
 
+    /*获取当前sds的长度: 注意，走到这里，则说明可用内存不够了，需要扩容*/
     len = sdslen(s);
+    /*获取sds结构体首地址：要时刻记住，传入的s变量实际是指向的sds结构体中的柔性数组buf的*/
     sh = (char*)s-sdsHdrSize(oldtype);
     newlen = (len+addlen);
+    /*根据新的需要创建的数组的长度做校验。判断是否扩容的规则：
+     * 1、 小于1M，则两倍扩容
+     * 2、 大于1M，则每次扩容，增加1M，预留空余空间
+     * */
     if (newlen < SDS_MAX_PREALLOC)
         newlen *= 2;
     else
         newlen += SDS_MAX_PREALLOC;
 
+    /*计算新的长度对应的类*/
     type = sdsReqType(newlen);
 
     /* Don't use type 5: the user is appending to the string and type 5 is
      * not able to remember empty space, so sdsMakeRoomFor() must be called
      * at every appending operation. */
+    /*
+     * 注意：扩容时，是不能使用sdshdr5类型的结构的；
+     * 用户正在想string中追加元素，而sdshdr5类型是不能记住空闲空间的，也就是sdshdr5没有alloc字段，无法计算得到avali大小
+     * */
     if (type == SDS_TYPE_5) type = SDS_TYPE_8;
 
+    /*计算得到新的type对象的头大小*/
     hdrlen = sdsHdrSize(type);
     if (oldtype==type) {
+        /*仅仅是扩容，而不需要类型升级*/
         newsh = s_realloc(sh, hdrlen+newlen+1);
         if (newsh == NULL) return NULL;
         s = (char*)newsh+hdrlen;
     } else {
         /* Since the header size changes, need to move the string forward,
          * and can't use realloc */
+        /*因为类型变了，导致头的大小变了，因此只能使用malloc重新分配内存，而不能仅仅扩容。*/
         newsh = s_malloc(hdrlen+newlen+1);
         if (newsh == NULL) return NULL;
+        /*将当前数据拷贝到新创建的sds结构体中*/
         memcpy((char*)newsh+hdrlen, s, len+1);
-        s_free(sh);
+        s_free(sh);  // 释放原结构体的空间
+        /*根据新的sds结构体的首地址，通过指针偏移，找到柔性数组的首地址s*/
         s = (char*)newsh+hdrlen;
         s[-1] = type;
         sdssetlen(s, len);
@@ -394,13 +458,21 @@ sds sdsgrowzero(sds s, size_t len) {
  *
  * After the call, the passed sds string is no longer valid and all the
  * references must be substituted with the new pointer returned by the call. */
+/*
+ * 拼接字符串：将给定字符数组t的len的字符，追加到sds柔性数组中，不过需要注意的是，这个过程可能会涉及到扩容操作。
+ * */
 sds sdscatlen(sds s, const void *t, size_t len) {
+    /*获取sds当前长度*/
     size_t curlen = sdslen(s);
 
+    /*判断是否需要扩容，如果需要，则扩容后返回新创建的sds柔性数组*/
     s = sdsMakeRoomFor(s,len);
     if (s == NULL) return NULL;
+    /*将给定的数组t的len个字节拷贝到当前sds结构体的末尾*/
     memcpy(s+curlen, t, len);
+    /*同时设置新的sds结构的长度*/
     sdssetlen(s, curlen+len);
+    /*追加\0结束符*/
     s[curlen+len] = '\0';
     return s;
 }

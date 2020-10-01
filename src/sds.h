@@ -208,6 +208,11 @@ static inline void sdsinclen(sds s, size_t inc) {
     }
 }
 
+/*
+ * 获取分配的柔性数组的长度：
+ * sdshdr5：直接获取到高5位的长度，因为sdshdr5不支持扩容，所以其实际长度就是分配的长度。
+ * 其他类型：直接返回sdshdr*结构中的alloc字段。
+ * */
 /* sdsalloc() = sdsavail() + sdslen() */
 static inline size_t sdsalloc(const sds s) {
     unsigned char flags = s[-1];
