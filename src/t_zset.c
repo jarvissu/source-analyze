@@ -129,8 +129,14 @@ void zslFreeNode(zskiplistNode *node) {
 }
 
 /* Free a whole skiplist. */
+/*
+ * 释放整个跳表的空间
+ * 逻辑很简单，直接通过0层，从头结点header以此向后遍历，删除对应的节点，直到tail为止。
+ * 不在过多赘述
+ * */
 void zslFree(zskiplist *zsl) {
     zskiplistNode *node = zsl->header->level[0].forward, *next;
+
 
     zfree(zsl->header);
     while(node) {
@@ -323,8 +329,20 @@ zskiplistNode *zslInsert(zskiplist *zsl, double score, sds ele) {
 
 /* Internal function used by zslDelete, zslDeleteRangeByScore and
  * zslDeleteRangeByRank. */
+/*
+ * 删除跳表中的一个节点：直接指定删除的节点，不需要通过score或者ele进行查找：内部使用
+ * zsl：跳表对象
+ * x：被删除的节点
+ * update：被删除节点的每个层级的前一个节点的集合，下标对应层级
+ * */
 void zslDeleteNode(zskiplist *zsl, zskiplistNode *x, zskiplistNode **update) {
     int i;
+    /*
+     * 遍历所有层级，修改每个层级的节点的指针：要考虑两种情况：
+     * 1、遍历的层级位于x节点的最大层级之内：即i<=x.level，此时需要修改前一个节点的forward指针，也需要修改span
+     * 2、遍历的层级比x节点的最大层级大：即i>x.level，此时，仅仅需要修改前一个节点的span即可，
+     *      因为前一个节点的forward指针并没有指向x节点
+     * */
     for (i = 0; i < zsl->level; i++) {
         if (update[i]->level[i].forward == x) {
             update[i]->level[i].span += x->level[i].span - 1;
@@ -333,13 +351,26 @@ void zslDeleteNode(zskiplist *zsl, zskiplistNode *x, zskiplistNode **update) {
             update[i]->level[i].span -= 1;
         }
     }
+
+    /*
+     * 判断x被删除后，它的0层的前一个节点是否是尾结点：
+     * 如果是，即forward为null：则zsl->tail = x->backward
+     * 如果不是，即forward不为null：则修改被删除节点的后一个节点的回退指针（即x->level[0].forward->backward）
+     * 指向被删除节点的回退指针（即x->backward)
+     * */
     if (x->level[0].forward) {
         x->level[0].forward->backward = x->backward;
     } else {
         zsl->tail = x->backward;
     }
+
+    /*
+     * 处理被删除的节点的level是整个跳表中的level中最大的情况
+     * 当删除的x节点时跳跃表的最高节点，并且没有其他节点与x节点的高度相同时，需要将跳跃表的高度减1.
+     * */
     while(zsl->level > 1 && zsl->header->level[zsl->level-1].forward == NULL)
         zsl->level--;
+    // 节点总数减1
     zsl->length--;
 }
 
@@ -351,11 +382,23 @@ void zslDeleteNode(zskiplist *zsl, zskiplistNode *x, zskiplistNode **update) {
  * it is not freed (but just unlinked) and *node is set to the node pointer,
  * so that it is possible for the caller to reuse the node (including the
  * referenced SDS string at node->ele). */
+/*
+ * 根据指定的score或者ele从跳表中删除一个节点。删除成功返回1，否则返回0
+ * 删除操作主要分为如下两个步骤：
+ * 1、查找需要删除的节点
+ * 2、设置span和forward
+ *
+ * 由于跳表是通过链表实现的，因此删除一个元素，修改指针的指向就可以了。
+ * 1、修改被删除节点的各个层级的前一个节点的span + <被删除节点的该层级的span> -1
+ * 2、修改被删除节点的各个层级的前一个节点的forward指针指向被删除节点的forward指针
+ * 3、修改被删除节点的后一个几点的回退指针为前一个节点
+ * */
 int zslDelete(zskiplist *zsl, double score, sds ele, zskiplistNode **node) {
     zskiplistNode *update[ZSKIPLIST_MAXLEVEL], *x;
     int i;
 
     x = zsl->header;
+    /*此处和插入式一样，遍历跳表，定位到被删除节点的位置，并记录每个层级的前一个节点到update[]数组中*/
     for (i = zsl->level-1; i >= 0; i--) {
         while (x->level[i].forward &&
                 (x->level[i].forward->score < score ||
@@ -366,14 +409,24 @@ int zslDelete(zskiplist *zsl, double score, sds ele, zskiplistNode **node) {
         }
         update[i] = x;
     }
+    // 注意，走到这里时，update[0]=x，因此x其实只是被删除节点在0层级的前一个节点。
+
     /* We may have multiple elements with the same score, what we need
      * is to find the element with both the right score and object. */
+    /*redis中可能存储了很多相同score的元素，因此我们需要找到具有相同score以及object内容的节点*/
+
+    // 获取到被删除的节点，即x
     x = x->level[0].forward;
+    /*比较这个值，只有score和ele都相等时，才执行删除操作*/
     if (x && score == x->score && sdscmp(x->ele,ele) == 0) {
+        /*删除找到的x节点*/
         zslDeleteNode(zsl, x, update);
+        /*判断是否需要将删除节点x返回，即通过参数中的node指针是否为空来判断*/
         if (!node)
+            // 不需要返回，则直接释放这个删除节点的内存
             zslFreeNode(x);
         else
+            // 需要返回，则赋值给node变量。同时返回1
             *node = x;
         return 1;
     }
@@ -1665,6 +1718,7 @@ long zsetRank(robj *zobj, sds ele, int reverse) {
  *----------------------------------------------------------------------------*/
 
 /* This generic command implements both ZADD and ZINCRBY. */
+/*zadd和zincrby命令的一般性实现*/
 void zaddGenericCommand(client *c, int flags) {
     static char *nanerr = "resulting score is not a number (NaN)";
     robj *key = c->argv[1];
