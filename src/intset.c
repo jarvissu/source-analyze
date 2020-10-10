@@ -112,6 +112,11 @@ static intset *intsetResize(intset *is, uint32_t len) {
  * sets "pos" to the position of the value within the intset. Return 0 when
  * the value is not present in the intset and sets "pos" to the position
  * where "value" can be inserted. */
+/*
+ * 查找参数中给定value所在的位置。
+ * 1、找到时，返回1，同时pos参数记录给定的value在intset集合中的位置。
+ * 2、未找到：返回0，同时pos参数记录给定的value在intset集合中待插入的位置。
+ * */
 static uint8_t intsetSearch(intset *is, int64_t value, uint32_t *pos) {
     int min = 0, max = intrev32ifbe(is->length)-1, mid = -1;
     int64_t cur = -1;
@@ -171,6 +176,7 @@ static intset *intsetUpgradeAndAdd(intset *is, int64_t value) {
         _intsetSet(is,length+prepend,_intsetGetEncoded(is,length,curenc));
 
     /* Set the value at the beginning or the end. */
+    /*根据给定的value是否大于0，来判断是插入到末尾（最大）还是开头（最小）*/
     if (prepend)
         _intsetSet(is,0,value);
     else
@@ -201,7 +207,9 @@ static void intsetMoveTail(intset *is, uint32_t from, uint32_t to) {
 }
 
 /* Insert an integer in the intset */
+/*向intset集合中插入一个新的元素*/
 intset *intsetAdd(intset *is, int64_t value, uint8_t *success) {
+    /*获取到给定的value的编码*/
     uint8_t valenc = _intsetValueEncoding(value);
     uint32_t pos;
     if (success) *success = 1;
@@ -209,19 +217,29 @@ intset *intsetAdd(intset *is, int64_t value, uint8_t *success) {
     /* Upgrade encoding if necessary. If we need to upgrade, we know that
      * this value should be either appended (if > 0) or prepended (if < 0),
      * because it lies outside the range of existing values. */
+    /*根据给定value的编码，判断是否需要扩容：即升级插入还是直接插入*/
     if (valenc > intrev32ifbe(is->encoding)) {
         /* This always succeeds, so we don't need to curry *success. */
+        /*
+         * 升级插入总是成功的，因为需要扩容，
+         * 则表示当前intset中肯定没有改value值，
+         * 并且该value要么在intset中最大（插入到末尾），要么最小（插入到最前面）
+         * */
         return intsetUpgradeAndAdd(is,value);
     } else {
         /* Abort if the value is already present in the set.
          * This call will populate "pos" with the right position to insert
          * the value when it cannot be found. */
+        /*首先查询该value在intset中是否存在，因为set集合是不允许重复的。*/
         if (intsetSearch(is,value,&pos)) {
+            /*存在时，则直接返回，同时设置success=0*/
             if (success) *success = 0;
             return is;
         }
 
+        /*不存在时，pos指向value在该intset中待插入的位置，首先进行扩容操作*/
         is = intsetResize(is,intrev32ifbe(is->length)+1);
+        /*插入value，同时将pos后面的元素向后移位，给value腾出空间*/
         if (pos < intrev32ifbe(is->length)) intsetMoveTail(is,pos,pos+1);
     }
 
@@ -231,11 +249,17 @@ intset *intsetAdd(intset *is, int64_t value, uint8_t *success) {
 }
 
 /* Delete integer from intset */
+/*从intset中删除一个元素*/
 intset *intsetRemove(intset *is, int64_t value, int *success) {
+    /*一样，先计算出给定的value的编码*/
     uint8_t valenc = _intsetValueEncoding(value);
     uint32_t pos;
     if (success) *success = 0;
 
+    /*
+     * 只有当给定的value在intset中时，才会指向删除操作
+     * 当给定value的编码大于intset的编码时，则说明该value一定不再intset中，不执行删除操作
+     * */
     if (valenc <= intrev32ifbe(is->encoding) && intsetSearch(is,value,&pos)) {
         uint32_t len = intrev32ifbe(is->length);
 
@@ -243,7 +267,9 @@ intset *intsetRemove(intset *is, int64_t value, int *success) {
         if (success) *success = 1;
 
         /* Overwrite value with tail and update length */
+        /*当待删除的数据在intset中间，则通过移位的方式覆盖待删除数据*/
         if (pos < (len-1)) intsetMoveTail(is,pos+1,pos);
+        /*当位于最后时，则直接通过intset缩容，丢弃最后面的待删除数据*/
         is = intsetResize(is,len-1);
         is->length = intrev32ifbe(len-1);
     }
@@ -251,8 +277,19 @@ intset *intsetRemove(intset *is, int64_t value, int *success) {
 }
 
 /* Determine whether a value belongs to this set */
+/*
+ * 校验一个值是否属于这个集合intset
+ * intset是按从小到大有序排列的，所以通过防御性判断之后（参数校验），
+ * 使用二分查找法进行元素的查找即可。
+ * */
 uint8_t intsetFind(intset *is, int64_t value) {
+    /*
+     * 判断给定的value的编码方式：即该int值所在的区间
+     *      如果编码方式不小于当前intset的编码方式，（即给定的value超过了当前intset编码方式的表示范围），
+     *      则直接返回false。
+     * */
     uint8_t valenc = _intsetValueEncoding(value);
+    /*调用intsetSearch进行二分查找*/
     return valenc <= intrev32ifbe(is->encoding) && intsetSearch(is,value,NULL);
 }
 

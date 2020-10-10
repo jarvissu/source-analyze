@@ -32,9 +32,15 @@
 #define __INTSET_H
 #include <stdint.h>
 
+/*
+ * intset类型编码结构：set的一种底层编码实现
+ * */
 typedef struct intset {
+    /*编码类型*/
     uint32_t encoding;
+    /*元素个数*/
     uint32_t length;
+    /*柔性数组，根据encoding字段决定几个字节表示一个元素*/
     int8_t contents[];
 } intset;
 

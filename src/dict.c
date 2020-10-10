@@ -108,12 +108,15 @@ static void _dictReset(dictht *ht)
 }
 
 /* Create a new hash table */
+/*
+ * 创建一个新的hash表，即字典
+ * */
 dict *dictCreate(dictType *type,
         void *privDataPtr)
 {
-    dict *d = zmalloc(sizeof(*d));
+    dict *d = zmalloc(sizeof(*d)); // 申请内存空间：96字节
 
-    _dictInit(d,type,privDataPtr);
+    _dictInit(d,type,privDataPtr); // 初始化结构体
     return d;
 }
 
@@ -122,10 +125,10 @@ int _dictInit(dict *d, dictType *type,
         void *privDataPtr)
 {
     _dictReset(&d->ht[0]);
-    _dictReset(&d->ht[1]);
+    _dictReset(&d->ht[1]);   // 初始化ht[0], ht[1]hash表
     d->type = type;
     d->privdata = privDataPtr;
-    d->rehashidx = -1;
+    d->rehashidx = -1;  // 初始化为-1，表示没有进行rehash操作
     d->iterators = 0;
     return DICT_OK;
 }
@@ -144,14 +147,21 @@ int dictResize(dict *d)
 }
 
 /* Expand or create the hash table */
+/*
+ * 字典扩容
+ * d：待扩容的字典
+ * size：扩容后的容量：d->ht[0].size*2
+ * */
 int dictExpand(dict *d, unsigned long size)
 {
     /* the size is invalid if it is smaller than the number of
      * elements already inside the hash table */
+    /*参数校验：当前字典如果正处于rehash或者给定的size比已使用的还小，则直接返回错误*/
     if (dictIsRehashing(d) || d->ht[0].used > size)
         return DICT_ERR;
 
     dictht n; /* the new hash table */
+    /*保证扩容的容量是2的幂次方*/
     unsigned long realsize = _dictNextPower(size);
 
     /* Rehashing to the same table size is not useful. */
@@ -262,11 +272,16 @@ static void _dictRehashStep(dict *d) {
 }
 
 /* Add an element to the target hash table */
+/*
+ * 添加一个新的节点到目标hash表
+ * */
 int dictAdd(dict *d, void *key, void *val)
 {
+    /*此处查找该key是否在字典中已存在，如果已存在，则返回null，否则将key作为新节点插入到dict中，并返回新节点。*/
     dictEntry *entry = dictAddRaw(d,key,NULL);
 
     if (!entry) return DICT_ERR;
+    /*设置新节点的value值*/
     dictSetVal(d, entry, val);
     return DICT_OK;
 }
@@ -289,16 +304,24 @@ int dictAdd(dict *d, void *key, void *val)
  *
  * If key was added, the hash entry is returned to be manipulated by the caller.
  */
+/*
+ * 向字典中添加一个节点，但是不设置value值。同时校验当前key是否已存在，若已存在，则返回null，否则返回新节点
+ * */
 dictEntry *dictAddRaw(dict *d, void *key, dictEntry **existing)
 {
     long index;
     dictEntry *entry;
     dictht *ht;
 
+    /*
+     * 判断是否正在指向rehash操作
+     * 是，则执行一次rehash，从而实现渐进式rehash。
+     * */
     if (dictIsRehashing(d)) _dictRehashStep(d);
 
     /* Get the index of the new element, or -1 if
      * the element already exists. */
+    /*获取到key对应的数组下标，如果为-1，表示该key已存在*/
     if ((index = _dictKeyIndex(d, key, dictHashKey(d,key), existing)) == -1)
         return NULL;
 
@@ -306,13 +329,20 @@ dictEntry *dictAddRaw(dict *d, void *key, dictEntry **existing)
      * Insert the element in top, with the assumption that in a database
      * system it is more likely that recently added entries are accessed
      * more frequently. */
+    /*
+     * 判断当前字典dict是否处于rehash状态，
+     * 1、如果处于rehash状态，新节点插入到ht[1]中
+     * 2、如果不是处于rehash状态，新节点插入到ht[0]中
+     * */
     ht = dictIsRehashing(d) ? &d->ht[1] : &d->ht[0];
+    /*分配新节点entry的内存空间，并通过头插法插入到指定的hash表中*/
     entry = zmalloc(sizeof(*entry));
     entry->next = ht->table[index];
     ht->table[index] = entry;
     ht->used++;
 
     /* Set the hash entry fields. */
+    /*设置该节点的key，但是没有设置value*/
     dictSetKey(d, entry, key);
     return entry;
 }
@@ -473,13 +503,18 @@ void dictRelease(dict *d)
     zfree(d);
 }
 
+/*从字典d中查找key，找到则返回该节点，否则返回null*/
 dictEntry *dictFind(dict *d, const void *key)
 {
     dictEntry *he;
     uint64_t h, idx, table;
 
+    /*当两个数组的容量总和小于0时，表示当前没有元素，直接返回null*/
     if (d->ht[0].used + d->ht[1].used == 0) return NULL; /* dict is empty */
+    /*如果当前正处于rehash中，则执行一次rehash操作*/
     if (dictIsRehashing(d)) _dictRehashStep(d);
+
+    /*获取hash值，同时根据hash值，遍历两个hash表，查找指定的key，找到则返回，否则返回null*/
     h = dictHashKey(d, key);
     for (table = 0; table <= 1; table++) {
         idx = h & d->ht[table].sizemask;
@@ -489,6 +524,7 @@ dictEntry *dictFind(dict *d, const void *key)
                 return he;
             he = he->next;
         }
+        /*ht[0]遍历完后，如果发现字典还不是处于rehash状态，则可以直接返回null，不用再遍历ht[1]。否则遍历ht[1]*/
         if (!dictIsRehashing(d)) return NULL;
     }
     return NULL;
@@ -859,6 +895,15 @@ static unsigned long rev(unsigned long v) {
  * 3) The reverse cursor is somewhat hard to understand at first, but this
  *    comment is supposed to help.
  */
+/*
+ * dictScan 用于遍历一个字典的所有元素
+ * d：当前迭代的字典
+ * v：表示迭代开始的游标(即hash表中数组索引）每次遍历后会返回新的游标值，
+ *      整个遍历过程都是围绕这个游标值的改动来进行的，以保证所有数据都能够被遍历到
+ * fn：函数指针，每遍历一个节点则调用该函数处理
+ * bucketfn：函数指针，在整理碎片时使用
+ * privdata：回调函数fn所需参数
+ * */
 unsigned long dictScan(dict *d,
                        unsigned long v,
                        dictScanFunction *fn,
@@ -873,8 +918,22 @@ unsigned long dictScan(dict *d,
 
     /* Having a safe iterator means no rehashing can happen, see _dictRehashStep.
      * This is needed in case the scan callback tries to do dictFind or alike. */
+    /*
+     * 表示该字典持有了一个安全迭代器，意味着不能再进行rehash操作
+     * */
     d->iterators++;
 
+    /*
+     * if-else意味着间断遍历字典时可能遇到的两种情况：
+     * 1、遍历过程中始终没有遇到rehash操作
+     *      1.1、从迭代开始到结束，散列表都没有进行过rehash操作：此时直接遍历ht[0]即可
+     *      1.2、从迭代开始到结束，散列表进行了扩容或者缩容操作，且恰好为两次迭代间隔期间完成了rehash操作：
+     *          此时，redis通过一定的位移运算，计算游标值，以此实现字典的遍历不重复也不遗漏
+     * 2、遍历过程中遇到rehash操作：此时会同时并存两个Hash表，因为大小表ht[0]和ht[1]并存，
+     *      所以需要从ht[0]，ht[1]中都取出数据，整个遍历过程为：
+     *      先找到两个散列表中更小的表，先对小的Hash表遍历，然后对大的Hash表遍历，同时通过一定的位移运算，计算游标，
+     *      以此保证字典的遍历操作 不重复也不遗漏。
+     * */
     if (!dictIsRehashing(d)) {
         t0 = &(d->ht[0]);
         m0 = t0->sizemask;
@@ -902,6 +961,7 @@ unsigned long dictScan(dict *d,
         t1 = &d->ht[1];
 
         /* Make sure t0 is the smaller and t1 is the bigger table */
+        /*确保t0指向更小的一个hash表，t1指向更大的hash表*/
         if (t0->size > t1->size) {
             t0 = &d->ht[1];
             t1 = &d->ht[0];
@@ -913,6 +973,7 @@ unsigned long dictScan(dict *d,
         /* Emit entries at cursor */
         if (bucketfn) bucketfn(privdata, &t0->table[v & m0]);
         de = t0->table[v & m0];
+        /*先遍历t0：即更小的hash表*/
         while (de) {
             next = de->next;
             fn(privdata, de);
@@ -976,6 +1037,11 @@ static unsigned long _dictNextPower(unsigned long size)
 {
     unsigned long i = DICT_HT_INITIAL_SIZE;
 
+    /*
+     * LONG_MAX默认为1M：
+     * 当size>=1M时，则直接扩容1M空间，即+1LU
+     * 当size<1M时，则去不小于size的最大2的幂次方
+     * */
     if (size >= LONG_MAX) return LONG_MAX + 1LU;
     while(1) {
         if (i >= size)

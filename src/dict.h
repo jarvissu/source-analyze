@@ -44,6 +44,16 @@
 /* Unused arguments generate annoying warnings... */
 #define DICT_NOTUSED(V) ((void) V)
 
+/*
+ * 字典结构中的每一个键值对：
+ * key：存储key的结构，实际就是一个sds结构体，因为redis中的key只能是字符串类型
+ * v：存储value的结构，是一个联合体
+ *      val：存储实际的value的值
+ *      u64：
+ *      s64：存储该键值对的过期时间
+ *      d：val为zset结构时， 存储score值
+ * next：用来指向hash冲突时的元素，通过头插法，形成单链表。
+ * */
 typedef struct dictEntry {
     void *key;
     union {
@@ -66,6 +76,13 @@ typedef struct dictType {
 
 /* This is our hash table structure. Every dictionary has two of this as we
  * implement incremental rehashing, for the old to the new table. */
+/*
+ * Redis字典的结构体实现
+ * table：是一个二维数组，有两个数组
+ * size：数组的长度
+ * sizemask：掩码，用来通过hash值计算数组索引下标：恒为size-1
+ * used：当前的元素个数
+ * */
 typedef struct dictht {
     dictEntry **table;
     unsigned long size;
@@ -73,6 +90,15 @@ typedef struct dictht {
     unsigned long used;
 } dictht;
 
+/*
+ * 最外层封装的一个字典的数据结构，主要作用是对散列表再进行一次封装，当字典需要进行一次特殊操作时，要用到里面的一些辅助字段。
+ * type：该字典对应的特定操作函数
+ * privdata：该字典依赖的数据
+ * ht：hash表，键值对存储在此，两个dictht结构，用来实现渐进式rehash
+ * rehashidx：rehash标识。默认值为-1，标识没有进行rehash；
+ *      不为-1时，代表正在进行rehash操作，存储的值表示Hash表ht[0]的rehash操作进行到了哪个索引
+ * iterators： 当前运行的迭代器数
+ * */
 typedef struct dict {
     dictType *type;
     void *privdata;
@@ -85,6 +111,19 @@ typedef struct dict {
  * dictAdd, dictFind, and other functions against the dictionary even while
  * iterating. Otherwise it is a non safe iterator, and only dictNext()
  * should be called while iterating. */
+/*
+ * 迭代器的结构体实现
+ * d：待迭代的字典
+ * index：当前迭代到hash表中的哪个索引值
+ * table：用于表示当前正在迭代的hash表，即ht[0],ht[1]
+ * safe：表示当前创建的是否为安全迭代器，1表示为安全迭代器
+ * entry：当前节点
+ * nextEntry：下一个节点
+ * fingerprint：字典的指纹，当字典没有发生任何变化时，该值不变，否则该值会改变。
+ *
+ * 注意：entry和nextEntry两个指针分别指向Hash冲突后的两个父子节点。
+ * 如果在安全模式下，删除了entry节点，nextEntry字段可以保证后续迭代数据不丢失
+ * */
 typedef struct dictIterator {
     dict *d;
     long index;

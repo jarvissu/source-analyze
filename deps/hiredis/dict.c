@@ -132,21 +132,31 @@ static int dictExpand(dict *ht, unsigned long size) {
 }
 
 /* Add an element to the target hash table */
+/*
+ * 添加一个新的节点到目标hash表：
+ * ht：目标hash表
+ * key：新节点的key
+ * val：新节点的value
+ * */
 static int dictAdd(dict *ht, void *key, void *val) {
     int index;
     dictEntry *entry;
 
     /* Get the index of the new element, or -1 if
      * the element already exists. */
+    /*查找当前hash表中是否存在当前指定的key，存在，则直接返回错误*/
     if ((index = _dictKeyIndex(ht, key)) == -1)
         return DICT_ERR;
 
     /* Allocates the memory and stores key */
+    /*申请新节点内存空间*/
     entry = malloc(sizeof(*entry));
+    /*通过头插法，插入到hash表ht对应的index索引位置，形成一个链表结构*/
     entry->next = ht->table[index];
     ht->table[index] = entry;
 
     /* Set the hash entry fields. */
+    /*设置新节点的key和value值*/
     dictSetHashKey(ht, entry, key);
     dictSetHashVal(ht, entry, val);
     ht->used++;
@@ -317,6 +327,7 @@ static unsigned long _dictNextPower(unsigned long size) {
 /* Returns the index of a free slot that can be populated with
  * an hash entry for the given 'key'.
  * If the key already exists, -1 is returned. */
+/*返回一个key在对应的ht的下标，同时校验该key是否已经存在，若存在，则返回-1*/
 static int _dictKeyIndex(dict *ht, const void *key) {
     unsigned int h;
     dictEntry *he;
