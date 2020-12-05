@@ -43,6 +43,11 @@
  * recompress: 1 bit, bool, true if node is temporarry decompressed for usage.
  * attempted_compress: 1 bit, boolean, used for verifying during testing.
  * extra: 10 bits, free for future use; pads out the remainder of 32 bits */
+/*
+ * quicklistNode是一个32个字节的数据结构，描述了一个quicklist中的一个节点，也相当于一个ziplist
+ * prev，next：前驱和后继指针，通过两个指针构成一个双向链表
+ * zl：一个字节数组，存储ziplist数据
+ * */
 typedef struct quicklistNode {
     struct quicklistNode *prev;
     struct quicklistNode *next;
@@ -102,6 +107,19 @@ typedef struct quicklistBookmark {
  * 'fill' is the user-requested (or default) fill factor.
  * 'bookmakrs are an optional feature that is used by realloc this struct,
  *      so that they don't consume memory when not used. */
+/*
+ * quicklist数据结构在64位系统上占40个字节
+ * head：指向quicklist的头结点
+ * tail：指向quicklist的尾结点
+ * count：该quicklist的所有的ziplist的entry的个数
+ * len：quicklist中的节点个数，即ziplist的个数
+ * fill：用来指明每个quicklistNode中ziplist的长度，
+ *      当fill为正数时，表示每个ziplist最多包含的entry的个数
+ *      当fill为负数时，表示ziplist的大小，-1表示4KB，-5表示64KB
+ * compress：Redis认为我们经常访问的都是quicklist两端的数据，
+ *      因此为了节省空间，可以对中间的quicklistNode进行压缩。
+ *      compress表示的是，quicklist两端各有compress个quicklistNode节点不压缩。
+ * */
 typedef struct quicklist {
     quicklistNode *head;
     quicklistNode *tail;

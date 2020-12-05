@@ -179,6 +179,9 @@ volatile unsigned long lru_clock; /* Server global current LRU time. */
  *    TYPE, EXPIRE*, PEXPIRE*, TTL, PTTL, ...
  */
 
+/*
+ * 存储了Redis支持的所有的命令
+ * */
 struct redisCommand redisCommandTable[] = {
     {"module",moduleCommand,-2,
      "admin no-script",
@@ -1687,6 +1690,7 @@ void databasesCron(void) {
      * as master will synthesize DELs for us. */
     if (server.active_expire_enabled) {
         if (iAmMaster()) {
+            /*master节点查找并清除过期键*/
             activeExpireCycle(ACTIVE_EXPIRE_CYCLE_SLOW);
         } else {
             expireSlaveKeys();
@@ -1838,6 +1842,14 @@ void checkChildrenDone(void) {
  * a macro is used: run_with_period(milliseconds) { .... }
  */
 
+/*
+ * Redis Server定时任务：内部维护了redis中所有需要周期执行的定时任务
+ *
+ * run_with_period 宏定义实现了定时任务按照指定时间周期（_ms_）执行，
+ * 此时会被替换为一个if条件判断，条件为真才会执行定时任务。
+ *
+ * 注意：serverCron函数的执行时间不能过长，否则会导致服务器不能及时响应客户端的命令请求。
+ * */
 int serverCron(struct aeEventLoop *eventLoop, long long id, void *clientData) {
     int j;
     UNUSED(eventLoop);
@@ -1954,9 +1966,11 @@ int serverCron(struct aeEventLoop *eventLoop, long long id, void *clientData) {
     }
 
     /* We need to do a few operations on clients asynchronously. */
+    /*异步的对客户端进行一些操作：如清除超时客户端*/
     clientsCron();
 
     /* Handle background operations on Redis databases. */
+    /*在Redis数据库中执行后台操作：如删除过期键*/
     databasesCron();
 
     /* Start a scheduled AOF rewrite if this was requested by the user while
@@ -2031,6 +2045,9 @@ int serverCron(struct aeEventLoop *eventLoop, long long id, void *clientData) {
 
     /* Replication cron function -- used to reconnect to master,
      * detect transfer failures, start background RDB transfers and so forth. */
+    /*
+     * 1秒执行一次，用于连接master节点，当节点执行slaveof命令后，由该事件循环去发起连接主节点的请求。
+     * */
     run_with_period(1000) replicationCron();
 
     /* Run the Redis Cluster cron. */
@@ -2830,6 +2847,9 @@ void initServer(void) {
     /* Create the timer callback, this is our way to process many background
      * operations incrementally, like clients timeout, eviction of unaccessed
      * expired keys and so forth. */
+    /*
+     * 创建时间事件：redisServer中只创建了这一个时间事件，而该时间事件的定时任务serverCron中实现了redis中所有定时任务的周期执行
+     * */
     if (aeCreateTimeEvent(server.el, 1, serverCron, NULL, NULL) == AE_ERR) {
         serverPanic("Can't create event loop timers.");
         exit(1);
@@ -4900,7 +4920,7 @@ int iAmMaster(void) {
             (server.cluster_enabled && nodeIsMaster(server.cluster->myself)));
 }
 
-
+/*Redis 服务器启动的入口函数*/
 int main(int argc, char **argv) {
     struct timeval tv;
     int j;

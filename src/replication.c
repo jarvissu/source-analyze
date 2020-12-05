@@ -2431,10 +2431,16 @@ int cancelReplicationHandshake(void) {
 }
 
 /* Set replication to the specified master address and port. */
+/*
+ * 为指定的master的ip和port设置从节点。
+ * 但是此时并没有向主节点发起连接请求，说明该操作是一个异步操作，真正连接主节点的操作是在serverCron时间事件中，
+ * 每1秒执行一次
+ * */
 void replicationSetMaster(char *ip, int port) {
     int was_master = server.masterhost == NULL;
 
     sdsfree(server.masterhost);
+    /*记录当前的master的ip和端口*/
     server.masterhost = sdsnew(ip);
     server.masterport = port;
     if (server.master) {
@@ -2464,6 +2470,7 @@ void replicationSetMaster(char *ip, int port) {
                               REDISMODULE_SUBEVENT_MASTER_LINK_DOWN,
                               NULL);
 
+    /*设置从节点的连接状态为可连接状态*/
     server.repl_state = REPL_STATE_CONNECT;
 }
 
@@ -2533,6 +2540,10 @@ void replicationHandleMasterDisconnection(void) {
      * the slaves only if we'll have to do a full resync with our master. */
 }
 
+/*
+ * 处于slaveof，replicaof命令的函数
+ * 由此可以看出slaveof和replicaof命令的功能是一样的，因为他们的执行函数都是一样的
+ * */
 void replicaofCommand(client *c) {
     /* SLAVEOF is not allowed in cluster mode as replication is automatically
      * configured using the current address of the master node. */
@@ -2543,9 +2554,13 @@ void replicaofCommand(client *c) {
 
     /* The special host/port combination "NO" "ONE" turns the instance
      * into a master. Otherwise the new master address is set. */
+    /*通过 'slave no one' 命令可以取消主从复制功能
+     * 此时主从服务器之间会断开连接，从服务器成为普通的redis实例
+     * */
     if (!strcasecmp(c->argv[1]->ptr,"no") &&
         !strcasecmp(c->argv[2]->ptr,"one")) {
         if (server.masterhost) {
+            /*调用该方法，断开与主服务器的连接*/
             replicationUnsetMaster();
             sds client = catClientInfoString(sdsempty(),c);
             serverLog(LL_NOTICE,"MASTER MODE enabled (user request from '%s')",
@@ -2560,6 +2575,7 @@ void replicaofCommand(client *c) {
             /* If a client is already a replica they cannot run this command,
              * because it involves flushing all replicas (including this
              * client) */
+            /*如果一个redis节点已经是slave节点，那么他不能执行saveof命令*/
             addReplyError(c, "Command is not valid when client is a replica.");
             return;
         }
@@ -2568,6 +2584,7 @@ void replicaofCommand(client *c) {
             return;
 
         /* Check if we are already attached to the specified slave */
+        /*校验当前主节点是否已经关联上了该slave节点*/
         if (server.masterhost && !strcasecmp(server.masterhost,c->argv[1]->ptr)
             && server.masterport == port) {
             serverLog(LL_NOTICE,"REPLICAOF would result into synchronization "
@@ -2579,6 +2596,7 @@ void replicaofCommand(client *c) {
         }
         /* There was no previous master or the user specified a different one,
          * we can continue. */
+        /*设置该节点的master节点的地址和端口号：注意，这里只是设置了*/
         replicationSetMaster(c->argv[1]->ptr, port);
         sds client = catClientInfoString(sdsempty(),c);
         serverLog(LL_NOTICE,"REPLICAOF %s:%d enabled (user request from '%s')",
@@ -2829,11 +2847,19 @@ void replicationResurrectCachedMaster(connection *conn) {
 /* This function counts the number of slaves with lag <= min-slaves-max-lag.
  * If the option is active, the server will prevent writes if there are not
  * enough connected slaves with the specified lag (or less). */
+/*
+ * 该函数实现了从服务器有效性的检测
+ * */
 void refreshGoodSlavesCount(void) {
     listIter li;
     listNode *ln;
     int good = 0;
 
+    /*
+     * 如果没有配置repl_min_slaves_to_write或者repl_min_slaves_max_lag属性，
+     * 则直接返回，不做从服务器有效性检测
+     * repl_min_slaves_to_write：当有效从服务器的数目小于该值时，主服务器拒绝执行写命令
+     * */
     if (!server.repl_min_slaves_to_write ||
         !server.repl_min_slaves_max_lag) return;
 
@@ -3119,6 +3145,7 @@ void replicationCron(void) {
     }
 
     /* Check if we should connect to a MASTER */
+    /*当repl_state设置为REPL_STATE_CONNECT时，表示应该发起连接请求*/
     if (server.repl_state == REPL_STATE_CONNECT) {
         serverLog(LL_NOTICE,"Connecting to MASTER %s:%d",
             server.masterhost, server.masterport);

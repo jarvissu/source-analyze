@@ -762,12 +762,18 @@ typedef struct user {
                                       need more reserved IDs use UINT64_MAX-1,
                                       -2, ... and so forth. */
 
+/*
+ * 存储客户端连接的所有信息
+ * */
 typedef struct client {
+    /*客户端递增的位移id*/
     uint64_t id;            /* Client incremental unique ID. */
+    /*与服务端的连接*/
     connection *conn;
     int resp;               /* RESP protocol version. Can be 2 or 3. */
     redisDb *db;            /* Pointer to currently SELECTed DB. */
     robj *name;             /* As set by CLIENT SETNAME. */
+    /*输入缓冲区：recv函数接收的客户端命令请求会暂时缓存在此缓冲区*/
     sds querybuf;           /* Buffer we use to accumulate client queries. */
     size_t qb_pos;          /* The position we have read in querybuf. */
     sds pending_querybuf;   /* If this client is flagged as master, this buffer
@@ -777,13 +783,16 @@ typedef struct client {
     size_t querybuf_peak;   /* Recent (100ms or more) peak of querybuf size. */
     int argc;               /* Num of arguments of current command. */
     robj **argv;            /* Arguments of current command. */
+    /*待执行的命令，以及上一次执行的命令*/
     struct redisCommand *cmd, *lastcmd;  /* Last command executed. */
+    /*该连接关联的用户：即登录用户。如果为空，则相当于admin*/
     user *user;             /* User associated with this connection. If the
                                user is set to NULL the connection can do
                                anything (admin). */
     int reqtype;            /* Request protocol type: PROTO_REQ_* */
     int multibulklen;       /* Number of multi bulk arguments left to read. */
     long bulklen;           /* Length of bulk argument in multi bulk request. */
+    /*输出链表，存储待返回给客户端的命令回复数据*/
     list *reply;            /* List of reply objects to send to the client. */
     unsigned long long reply_bytes; /* Tot bytes of objects in reply list. */
     size_t sentlen;         /* Amount of bytes already sent in the current
@@ -845,6 +854,13 @@ typedef struct client {
     int      client_cron_last_memory_type;
     /* Response buffer */
     int bufpos;
+    /*
+     * 输出缓冲区，存储待返回给客户端的命令回复数据。
+     * bufpos：表示输出缓冲区中数据的最大字节位置，显然sentlen~bufpos区间的数据都是需要返回给客户端的。
+     *
+     * reply和buf都是用于缓存待返回给客户端的命令回复数据，为什么需要两个呢？
+     *      其实二者只是用于返回不同的数据类型而已。
+     * */
     char buf[PROTO_REPLY_CHUNK_BYTES];
 } client;
 
@@ -1060,6 +1076,9 @@ struct clusterState;
 #define CHILD_INFO_TYPE_AOF 1
 #define CHILD_INFO_TYPE_MODULE 3
 
+/*
+ * Redis的服务器对象，存储服务器的一系列信息
+ * */
 struct redisServer {
     /* General */
     pid_t pid;                  /* Main process pid. */
@@ -1072,6 +1091,11 @@ struct redisServer {
                                    is enabled. */
     int hz;                     /* serverCron() calls frequency in hertz */
     redisDb *db;
+    /*
+     * 服务器初始化时，将redisCommandTable中的所有的命令存储到commands字典中。
+     * key：命令的名称
+     * value：redisCommand对象
+     * */
     dict *commands;             /* Command table */
     dict *orig_commands;        /* Command table before command renaming. */
     aeEventLoop *el;
@@ -1137,6 +1161,7 @@ struct redisServer {
     time_t loading_start_time;
     off_t loading_process_events_interval_bytes;
     /* Fast pointers to often looked up command */
+    /*对于经常使用的命令，直接存储在redisServer中，并没通过commands二次寻址*/
     struct redisCommand *delCommand, *multiCommand, *lpushCommand,
                         *lpopCommand, *rpopCommand, *zpopminCommand,
                         *zpopmaxCommand, *sremCommand, *execCommand,
@@ -1290,6 +1315,22 @@ struct redisServer {
     char *syslog_ident;             /* Syslog ident */
     int syslog_facility;            /* Syslog facility */
     /* Replication (master) */
+    /*
+     * 主从复制相关
+     * replid：服务器的运行ID，长度为40的随机字符串：
+     *      1、对于主服务器：replid表示的是当前服务器的运行ID
+     *      2、对于从服务器：replid表示其复制的主服务器的运行ID
+     * replid2和second_replid_offset：
+     *      1、初始化时replid2为空字符串，second_replid_offset为-1
+     *      2、当主服务器发生故障，自己成为新的主服务器时，便使用replid2和second_replid_offset存储之前主服务器的运行id与复制偏移量
+     * master_repl_offset：当前节点的复制偏移量
+     *
+     * repl_ping_slave_period：表示发送心跳包的周期，主服务器以此周期向所有的从服务器发送心跳包。
+     * repl_backlog：复制缓冲区：用于缓存主服务器已执行且待发送给从服务器的命令请求；缓冲区大小由repl_backlog_size决定
+     * repl_backlog_off：复制缓冲区中第一个字节的复制偏移量
+     * repl_backlog_histlen：复制缓冲区中存储的命令请求数据长度
+     * repl_backlog_idx：复制缓冲区中存储的命令请求最后一个字节索引位置，即向复制缓冲区写入数据时，会从该索引位置开始。
+     **/
     char replid[CONFIG_RUN_ID_SIZE+1];  /* My current replication ID. */
     char replid2[CONFIG_RUN_ID_SIZE+1]; /* replid inherited from master*/
     long long master_repl_offset;   /* My current replication offset */
@@ -1310,12 +1351,16 @@ struct redisServer {
                                        Only valid if server.slaves len is 0. */
     int repl_min_slaves_to_write;   /* Min number of slaves to write. */
     int repl_min_slaves_max_lag;    /* Max lag of <count> slaves to write. */
+    /*当前有效从服务器的数量*/
     int repl_good_slaves_count;     /* Number of slaves with lag <= max_lag. */
     int repl_diskless_sync;         /* Master send RDB to slaves sockets directly. */
     int repl_diskless_load;         /* Slave parse RDB directly from the socket.
                                      * see REPL_DISKLESS_LOAD_* enum */
     int repl_diskless_sync_delay;   /* Delay to start a diskless repl BGSAVE. */
     /* Replication (slave) */
+    /*
+     * 主从复制中，从节点相关属性
+     * */
     char *masteruser;               /* AUTH with this user and masterauth with master */
     char *masterauth;               /* AUTH with this password with master */
     char *masterhost;               /* Hostname of master */
@@ -1476,11 +1521,18 @@ typedef struct pubsubPattern {
 
 typedef void redisCommandProc(client *c);
 typedef int *redisGetKeysProc(struct redisCommand *cmd, robj **argv, int argc, int *numkeys);
+
+/*封装Redis的命令*/
 struct redisCommand {
+    /*命令的名称*/
     char *name;
+    /*命令的执行处理函数*/
     redisCommandProc *proc;
+    /*命令参数数目，主要用于校验命令请求格式是否正确。*/
     int arity;
+    /*命令标识：例如读命令还是写命令：每个flag占一个字节*/
     char *sflags;   /* Flags as string representation, one char per flag. */
+    /*实际的命令二进制标识，服务器启动时通过解析sflags生成*/
     uint64_t flags; /* The actual flags, obtained from the 'sflags' field. */
     /* Use a function to determine keys arguments in a command line.
      * Used for Redis Cluster redirect. */
@@ -1489,6 +1541,12 @@ struct redisCommand {
     int firstkey; /* The first argument that's a key (0 = no keys) */
     int lastkey;  /* The last argument that's a key */
     int keystep;  /* The step between first and last key */
+    /*
+     * microseconds：服务器启动至今命令总的执行时间；
+     * calls：服务器启动至今，命令执行的次数
+     *
+     * microseconds/calls即可计算出该命令的平均响应时间。用于统计
+     * */
     long long microseconds, calls;
     int id;     /* Command ID. This is a progressive ID starting from 0 that
                    is assigned at runtime, and is used in order to check

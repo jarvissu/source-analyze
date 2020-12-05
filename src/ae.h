@@ -68,6 +68,12 @@ typedef void aeEventFinalizerProc(struct aeEventLoop *eventLoop, void *clientDat
 typedef void aeBeforeSleepProc(struct aeEventLoop *eventLoop);
 
 /* File event structure */
+/*
+ * 文件事件的结构：
+ * mask：存储监控的文件事件类型，如AE_READABLE可读事件和AE_WRITABLE可写事件
+ * rfileProc：函数指针，指向读事件处理函数
+ * wfileProc：函数指针，指向写事件处理函数
+ * */
 typedef struct aeFileEvent {
     int mask; /* one of AE_(READABLE|WRITABLE|BARRIER) */
     aeFileProc *rfileProc;
@@ -76,6 +82,15 @@ typedef struct aeFileEvent {
 } aeFileEvent;
 
 /* Time event structure */
+/*
+ * 时间事件结构
+ * when_sec与when_ms：时间事件触发的秒数与毫秒数
+ * timeProc：函数指针，指向时间事件处理函数
+ * finalizerProc：函数指针，删除时间事件节点时会调用此函数。
+ *
+ * clientData：指向对应的客户端对象
+ * prev与next：指向前一个和下一个时间事件，构成双向链表
+ * */
 typedef struct aeTimeEvent {
     long long id; /* time event identifier. */
     long when_sec; /* seconds */
@@ -94,6 +109,24 @@ typedef struct aeFiredEvent {
 } aeFiredEvent;
 
 /* State of an event based program */
+/*
+ * Redis中的事件：包括文件事件（Socket可读可写事件）和时间事件（定时任务）两大类
+ * stop：事件循环是否结束
+ * events：存储文件事件数组，存储已经注册的文件事件
+ * fired：存储已经被触发的文件事件
+ * timeEventHead：时间事件链表头节点：Redis有多个时间事件，多个时间事件通过该头结点形成链表
+ *
+ * beforeSleep：Redis服务器需要阻塞等待文件时间的发生：进程阻塞之前会调用beforeSleep函数。
+ * afterSleep：进程因为某种原因被唤醒之后会调用afterSleep函数。
+ *
+ * apidata：指向不同的IO多路复用模型对象，不同的IO多路复用模型，对象也不同，因此是void *类型
+ *      以epoll为例，apidata指向的结构体是
+ *      typedef struct aeApiState {
+            int epfd;
+            struct epoll_event *events;
+        } aeApiState;
+        虽然都定义为aeApiState，但是结构体内部实现是不一样的
+ * */
 typedef struct aeEventLoop {
     int maxfd;   /* highest file descriptor currently registered */
     int setsize; /* max number of file descriptors tracked */

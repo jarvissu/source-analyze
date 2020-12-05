@@ -31,11 +31,19 @@
 
 #include <sys/epoll.h>
 
+/*
+ * epoll模型对象：
+ * epfd：epoll_create创建的epoll文件描述符
+ * events：epoll_wait监听返回的socket事件
+ * */
 typedef struct aeApiState {
     int epfd;
     struct epoll_event *events;
 } aeApiState;
 
+/*
+ * 创建epoll，是对epoll_create的封装
+ * */
 static int aeApiCreate(aeEventLoop *eventLoop) {
     aeApiState *state = zmalloc(sizeof(aeApiState));
 
@@ -70,6 +78,9 @@ static void aeApiFree(aeEventLoop *eventLoop) {
     zfree(state);
 }
 
+/*
+ * 注册事件：对epoll_ctl的封装
+ * */
 static int aeApiAddEvent(aeEventLoop *eventLoop, int fd, int mask) {
     aeApiState *state = eventLoop->apidata;
     struct epoll_event ee = {0}; /* avoid valgrind warning */
@@ -106,11 +117,14 @@ static void aeApiDelEvent(aeEventLoop *eventLoop, int fd, int delmask) {
 }
 
 static int aeApiPoll(aeEventLoop *eventLoop, struct timeval *tvp) {
+    /*首先获取到当前事件循环的IO模型*/
     aeApiState *state = eventLoop->apidata;
     int retval, numevents = 0;
 
+    /*启动epoll的事件监听，监听文件事件，同时将监听到的文件事件存储到state->events中*/
     retval = epoll_wait(state->epfd,state->events,eventLoop->setsize,
             tvp ? (tvp->tv_sec*1000 + tvp->tv_usec/1000) : -1);
+    /*监听到文件事件时，对文件事件进行处理*/
     if (retval > 0) {
         int j;
 
@@ -119,10 +133,12 @@ static int aeApiPoll(aeEventLoop *eventLoop, struct timeval *tvp) {
             int mask = 0;
             struct epoll_event *e = state->events+j;
 
+            /*转换epoll事件类型为Redis定义的事件类型*/
             if (e->events & EPOLLIN) mask |= AE_READABLE;
             if (e->events & EPOLLOUT) mask |= AE_WRITABLE;
             if (e->events & EPOLLERR) mask |= AE_WRITABLE|AE_READABLE;
             if (e->events & EPOLLHUP) mask |= AE_WRITABLE|AE_READABLE;
+            /*记录已发生事件到fired数组*/
             eventLoop->fired[j].fd = e->data.fd;
             eventLoop->fired[j].mask = mask;
         }
